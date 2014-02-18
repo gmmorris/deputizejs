@@ -1,0 +1,10 @@
+{
+    "name": "deputize",
+    "version": "0.1.0",
+    "main": "deputize.js",
+    "devDependencies": {
+        "qunit" : "latest"
+    },
+    "ignore": ["test", ".html"],
+    "keywords": ["deputize","dispatcher","caching","reactor","asynchronous","event","handling"]
+}
