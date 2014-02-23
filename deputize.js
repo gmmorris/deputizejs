@@ -26,7 +26,11 @@
         /***
          * fresh (boolean): Should requests skip the cache by default?
          */
-        fresh:false
+        fresh:false,
+        /***
+         * A callback to be called when an error occurs inside a deputy handler
+         */
+        onDeputyError:false
 
     };
 
@@ -41,8 +45,10 @@
          */
         if(typeof configuration == 'object') {
             this.configuration = extendTopDown(configuration,deputizerConfig);
-        } else {
+        } else if(configuration === undefined) {
             this.configuration = extendTopDown({},deputizerConfig);
+        } else {
+            throw new DeputizerError("Deputizer.constructor","Invalid configuration argument. Configuration is optional but must be an object, not a " + (typeof configuration));
         }
 
         // Current version of the utility.
@@ -100,7 +106,44 @@
             return deputy;
         };
 
-        this.execute = function(deputyUniqueID,fresh, success,failure,context){
+        /***
+         * Define a handler which executes everytime a fresh value is fetched for this deputy
+         * @param success
+         * @param failure
+         * @param context
+         * @returns {*}
+         */
+        this.when = function(deputyUniqueID,success,failure,context){
+            if(typeof deputyUniqueID != 'string' || deputyUniqueID.trim() === '') {
+                throw new DeputizerError("Deputizer.when","deputyUniqueID must be a string value.");
+            } else if(!this.knows(deputyUniqueID)) {
+                throw new DeputizerError("Deputizer.when","Deputizer doesn't have a definition for the ID " + deputyUniqueID);
+            }
+
+            deputyDefinitions[deputyUniqueID].when(success,failure,context);
+            return this;
+        };
+
+        /***
+         * Define a handler which executes only once
+         * @param success
+         * @param failure
+         * @param context
+         * @returns {*}
+         */
+        this.once = function(deputyUniqueID,success,failure,context){
+            if(typeof deputyUniqueID != 'string' || deputyUniqueID.trim() === '') {
+                throw new DeputizerError("Deputizer.once","deputyUniqueID must be a string value.");
+            } else if(!this.knows(deputyUniqueID)) {
+                throw new DeputizerError("Deputizer.once","Deputizer doesn't have a definition for the ID " + deputyUniqueID);
+            }
+
+            deputyDefinitions[deputyUniqueID].once(success,failure,context);
+            return this;
+        };
+
+        // Alias Execute & Fetch, just so code looks more logical when refering to actions vs. data fetching
+        this.execute = this.fetch = function(deputyUniqueID,fresh, success,failure,context){
             if(typeof deputyUniqueID != 'string' || deputyUniqueID.trim() === '') {
                 throw new DeputizerError("Deputizer.do","deputyUniqueID must be a string value.");
             } else if(!this.knows(deputyUniqueID)) {
@@ -108,7 +151,15 @@
             }
 
             deputyDefinitions[deputyUniqueID].execute(fresh,success,failure,context);
+            return this;
         };
+
+        /***
+         * FOR TESTING
+         * */
+        if(window && typeof window.deputizerTesting == 'boolean' && window.deputizerTesting) {
+            this._deputies = deputyDefinitions;
+        }
 
         return this;
     };
@@ -130,10 +181,11 @@
      * An error which takes place inside the Deputizer will always be a DeputizerError object
      * @type {Function}
      */
-    var DeputizerError = Deputizer.Error = function(src,message){
+    var DeputizerError = Deputizer.Error = function(src,message,error){
         this.name = "DeputizerError";
         this.src = src;
         this.message = src + ":"+ message;
+        this.error = error;
         return this;
     };
     DeputizerError.prototype = Error.prototype;
@@ -198,7 +250,8 @@
             return this;
         };
 
-        this.execute = function(fresh,success,failure,context){
+        // Alias Execute & Fetch, just so code looks more logical when refering to actions vs. data fetching
+        this.execute = this.fetch = function(fresh,success,failure,context){
 
             // check the arguments for the Do method
             var args = checkDoParams(fresh,success,failure,context,this.deputizer.configuration);
@@ -210,12 +263,12 @@
                 // use cache and call success
                 args.success.apply(args.context,this.cache);
             } else if(shouldExecute) {
-                if(this.isActive) {
-                    if(args.success) {
-                        // if this deputy is active just add the specified callbacks as handlers
-                        this.once(args.success,args.failure,args.context);
-                    }
-                } else {
+                if(args.success) {
+                    // if this deputy is active just adding the specified callbacks as handler
+                    // is enough as it will get called when the response arrives
+                    this.once(args.success,args.failure,args.context);
+                }
+                if(!this.isActive) {
                     // not active? Set as active and call
                     this.isActive = true;
 
@@ -328,26 +381,37 @@
             var once = deputy.handlers[HANDLERS_ONCE];
             var all = deputy.handlers[HANDLERS_STICKY];
 
-            try {
-                var index = once.length,handler;
-                while(index >= 0) {
-                    // remove from handlers array, as these execute only once
-                    handler = once.shift();
-                    index--;
-                    if(typeof handler[type] == 'function') {
+            var index = once.length,handler;
+            while(index > 0) {
+                // remove from handlers array, as these execute only once
+                handler = once.shift();
+                index--;
+                if(typeof handler[type] == 'function') {
+                    try {
                         handler[type].apply(handler[type].context,responseArgs);
+                    } catch (o_O) {
+                        // error thrown in deputy's handlers
+                        if(typeof deputy.deputizer.configuration.onDeputyError == 'function') {
+                            deputy.deputizer.configuration.onDeputyError(new DeputizerError('Deputy handler for "' + deputy.id + '"','Error ocured while a handler was being executed',o_O));
+                        }
                     }
                 }
+            }
 
-                for(index = 0;index < all.length;index++) {
-                    // remove from handlers array, as these execute only once
-                    handler = all[index];
-                    if(typeof handler[type] == 'function') {
+            for(index = 0;index < all.length;index++) {
+                // remove from handlers array, as these execute only once
+                handler = all[index];
+                if(typeof handler[type] == 'function') {
+
+                    try {
                         handler[type].apply(handler[type].context,responseArgs);
+                    } catch (o_O) {
+                        // error thrown in deputy's handlers
+                        if(typeof deputy.deputizer.configuration.onDeputyError == 'function') {
+                            deputy.deputizer.configuration.onDeputyError(new DeputizerError('Deputy handler for "' + deputy.id + '"','Error ocured while a handler was being executed',o_O));
+                        }
                     }
                 }
-            } catch (o_O) {
-                // error thrown in deputy's handlers
             }
 
             // no longer flagged as active
@@ -395,6 +459,13 @@
         }
         return obj;
     };
+
+    /***
+     * FOR TESTING
+     * */
+    if(window && typeof window.deputizerTesting == 'boolean' && window.deputizerTesting) {
+        Deputizer._defaults = deputizerConfig;
+    }
 
 
 })(this);
